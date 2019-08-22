@@ -115,6 +115,85 @@ class MobileBottleneck(nn.Module):
             return self.conv(x)
 
 
+class MobileNetV3_forFPN(nn.Module):
+    def __init__(self, n_class=1000, input_size=224, dropout=0.8, mode='small', width_mult=1.0):
+        super(MobileNetV3_forFPN, self).__init__()
+        input_channel = 16
+        last_channel = 1280
+
+        if mode == 'small':
+            # refer to Table 2 in paper
+            mobile_setting = [
+                # k, exp, c,  se,     nl,  s,
+                [3, 16,  16,  True,  'RE', 2],
+                [3, 72,  24,  False, 'RE', 2],
+                [3, 88,  24,  False, 'RE', 1],
+                [5, 96,  40,  True,  'HS', 2],
+                [5, 240, 40,  True,  'HS', 1],
+                [5, 240, 40,  True,  'HS', 1],
+                [5, 120, 48,  True,  'HS', 1],
+                [5, 144, 48,  True,  'HS', 1],
+                [5, 288, 96,  True,  'HS', 2],
+                [5, 576, 96,  True,  'HS', 1],
+                [5, 576, 96,  True,  'HS', 1],
+            ]
+        else:
+            raise NotImplementedError
+
+        # building first layer
+        assert input_size % 32 == 0
+        last_channel = make_divisible(last_channel * width_mult) if width_mult > 1.0 else last_channel
+
+        self.layers_os4 = [conv_bn(3, input_channel, 2, nlin_layer=Hswish)]#after 1st bottle neck
+        self.layers_os8 = [] #after 3rd bottle neck
+        self.layers_os16 = [] #after 8th bottle neck
+        self.layers_os32 = [] #last
+        layers = [self.layers_os4, self.layers_os8, self.layers_os16, self.layers_os32]
+        last_bneck = [1, 3, 8, 0]
+        
+        n_layer = 0
+        layer = layers[n_layer]
+        n_last_bneck = last_bneck[n_layer]
+        # building mobile blocks
+        for i, (k, exp, c, se, nl, s) in enumerate(mobile_setting):
+            output_channel = make_divisible(c * width_mult)
+            exp_channel = make_divisible(exp * width_mult)
+            layer.append(MobileBottleneck(input_channel, output_channel, k, s, exp_channel, se, nl))
+            input_channel = output_channel
+
+            if i+1 == n_last_bneck:
+                n_layer +=1
+                layer = layers[n_layer]
+                n_last_bneck = last_bneck[n_layer]
+
+        # make it nn.Sequential
+        self.layers_os4, self.layers_os8, self.layers_os16, self.layers_os32 = [nn.Sequential(*layer) for layer in layers]
+
+        self._initialize_weights()
+
+    def forward(self, x):
+        x1 = self.layers_os4(x)
+        x2 = self.layers_os8(x1)
+        x3 = self.layers_os16(x2)
+        x4 = self.layers_os32(x3)
+
+        return x4
+
+    def _initialize_weights(self):
+        # weight initialization
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
 class MobileNetV3(nn.Module):
     def __init__(self, n_class=1000, input_size=224, dropout=0.8, mode='small', width_mult=1.0):
         super(MobileNetV3, self).__init__()
@@ -221,6 +300,7 @@ class MobileNetV3(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
+                    
 
 def mobilenetv3(pretrained=False, **kwargs):
     model = MobileNetV3(**kwargs)
@@ -230,6 +310,16 @@ def mobilenetv3(pretrained=False, **kwargs):
         # raise NotImplementedError
     return model
 
+def load_pretrained_fpn(model, path):
+    mobNetv3 = MobileNetV3(mode='small')
+    state_dict = torch.load(path, map_location='cpu')
+    mobNetv3.load_state_dict(state_dict)
+    for param, base_param in zip(model.parameters(), mobNetv3.parameters()):
+        if param.size() == base_param.size():
+            param.data = base_param.data
+        else:
+            print('wrong size')
+    return model
 
 if __name__ == '__main__':
     net = mobilenetv3()
