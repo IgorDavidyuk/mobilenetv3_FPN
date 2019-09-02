@@ -310,17 +310,6 @@ def mobilenetv3(pretrained=False, **kwargs):
         # raise NotImplementedError
     return model
 
-def load_pretrained_fpn(model, path):
-    mobNetv3 = MobileNetV3(mode='small')
-    state_dict = torch.load(path, map_location='cpu')
-    mobNetv3.load_state_dict(state_dict)
-    for param, base_param in zip(model.parameters(), mobNetv3.parameters()):
-        if param.size() == base_param.size():
-            param.data = base_param.data
-        else:
-            print('wrong size')
-    return model
-
 if __name__ == '__main__':
     net = mobilenetv3()
     print('mobilenetv3:\n', net)
